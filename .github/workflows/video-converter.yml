@@ -1,4 +1,4 @@
-name: Convert 10 Videos - 9x16 to 16x9
+name: Convert 9x16 Videos to 16x9
 
 on:
   workflow_dispatch:
@@ -8,33 +8,34 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      RCLONE_CONFIG_NAN_NAN_DRIVE_TYPE: drive
       SOURCE_DIR: "NanNanDrive:NanNanIphone"
       DEST_DIR: "NanNanDrive:NanNanIphone2"
-      MAX_VIDEOS: 10
+      MAX_VIDEOS: "10"
 
     steps:
 
-      # --------------------------------------------------
+      # ============================================================
       # 1. Install rclone
-      # --------------------------------------------------
+      # ============================================================
       - name: Install rclone
         run: |
           curl https://rclone.org/install.sh | sudo bash
           rclone version
 
-      # --------------------------------------------------
+
+      # ============================================================
       # 2. Install FFmpeg
-      # --------------------------------------------------
+      # ============================================================
       - name: Install FFmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           ffmpeg -version
 
-      # --------------------------------------------------
-      # 3. Restore rclone config
-      # --------------------------------------------------
+
+      # ============================================================
+      # 3. Restore rclone.conf from GitHub Secret
+      # ============================================================
       - name: Restore rclone config
         env:
           RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG }}
@@ -46,253 +47,482 @@ jobs:
 
           chmod 600 "$HOME/.config/rclone/rclone.conf"
 
-          echo "rclone config restored"
+          echo "rclone config restored."
 
-      # --------------------------------------------------
-      # 4. Test Google Drive connection
-      # --------------------------------------------------
+
+      # ============================================================
+      # 4. Test Google Drive
+      # ============================================================
       - name: Test Google Drive
         run: |
-          rclone lsd "NanNanDrive:" || exit 1
+          echo "Testing Google Drive..."
 
-      # --------------------------------------------------
-      # 5. Create working folders
-      # --------------------------------------------------
-      - name: Create folders
+          rclone lsd "NanNanDrive:" || {
+            echo "ERROR: Cannot connect to Google Drive."
+            exit 1
+          }
+
+          echo "Google Drive connection OK."
+
+
+      # ============================================================
+      # 5. Create working directories
+      # ============================================================
+      - name: Create working directories
         run: |
+          rm -rf input
+          rm -rf output
+
           mkdir -p input
           mkdir -p output
 
-      # --------------------------------------------------
-      # 6. Get source video list
-      #    IMPORTANT:
-      #    Sorted alphabetically.
-      #    NOT RANDOM.
-      # --------------------------------------------------
-      - name: Build deterministic video queue
+          echo "Working directories created."
+
+
+      # ============================================================
+      # 6. Get ALL videos from NanNanIphone
+      #
+      # IMPORTANT:
+      # No rclone --sort here.
+      #
+      # We use Linux sort instead.
+      #
+      # This makes the order deterministic.
+      # NOT RANDOM.
+      # ============================================================
+      - name: Build deterministic video list
+        shell: bash
         run: |
 
-          echo "Reading source videos..."
+          echo "=========================================="
+          echo "Reading videos from NanNanIphone"
+          echo "=========================================="
 
           rclone lsf \
             "$SOURCE_DIR" \
             --files-only \
             --recursive \
             --format "p" \
-            --sort path \
-            > all_videos.txt
-
-          echo "All source videos:"
-          cat all_videos.txt
+            > all_videos_raw.txt
 
           echo ""
-          echo "Checking already processed videos..."
+          echo "Sorting videos alphabetically..."
 
-          : > pending_videos.txt
-
-          while IFS= read -r file
-          do
-
-            # Skip empty lines
-            [ -z "$file" ] && continue
-
-            # Only process common video formats
-            case "$file" in
-              *.mp4|*.MP4|*.mov|*.MOV|*.mkv|*.MKV|*.webm|*.WEBM|*.avi|*.AVI)
-                ;;
-              *)
-                continue
-                ;;
-            esac
-
-            # Destination path
-            destination="$DEST_DIR/$file"
-
-            # Check whether destination already exists
-            if rclone lsf "$destination" \
-              --files-only \
-              --max-depth 1 \
-              2>/dev/null | grep -q .
-            then
-              echo "SKIP - already converted: $file"
-            else
-              echo "PENDING: $file"
-              echo "$file" >> pending_videos.txt
-            fi
-
-          done < all_videos.txt
+          sort -f all_videos_raw.txt > all_videos.txt
 
           echo ""
-          echo "Pending videos:"
-          cat pending_videos.txt || true
+          echo "All videos:"
+          cat all_videos.txt || true
 
-          # Select exactly first 10
-          head -n "$MAX_VIDEOS" pending_videos.txt > selected_videos.txt
 
-          echo ""
-          echo "Selected videos:"
-          cat selected_videos.txt || true
-
-      # --------------------------------------------------
-      # 7. Download + Convert + Upload
-      # --------------------------------------------------
-      - name: Process videos
+      # ============================================================
+      # 7. Find videos that have NOT been converted yet
+      #
+      # Destination:
+      # NanNanIphone2
+      #
+      # If same relative path exists there:
+      # SKIP
+      #
+      # Otherwise:
+      # PENDING
+      # ============================================================
+      - name: Find unprocessed videos
+        shell: bash
         run: |
 
-          count=0
+          echo "=========================================="
+          echo "Checking already converted videos"
+          echo "=========================================="
+
+          rm -f pending_videos.txt
+
+          touch pending_videos.txt
 
           while IFS= read -r relative_path
           do
 
-            [ -z "$relative_path" ] && continue
-
-            count=$((count + 1))
-
-            echo ""
-            echo "======================================"
-            echo "Processing video $count / $MAX_VIDEOS"
-            echo "$relative_path"
-            echo "======================================"
-
-            # ------------------------------------------------
-            # Make local filename
-            # ------------------------------------------------
-
-            filename="$(basename "$relative_path")"
-
-            mkdir -p "input/$(dirname "$relative_path")"
-            mkdir -p "output/$(dirname "$relative_path")"
-
-            input_file="input/$relative_path"
-
-            output_file="output/$relative_path"
-
-            # ------------------------------------------------
-            # Download source video
-            # ------------------------------------------------
-
-            echo "Downloading..."
-
-            rclone copyto \
-              "$SOURCE_DIR/$relative_path" \
-              "$input_file" \
-              --progress
-
-            # ------------------------------------------------
-            # Check video
-            # ------------------------------------------------
-
-            if [ ! -f "$input_file" ]; then
-              echo "ERROR: Download failed"
+            # Ignore empty lines
+            if [ -z "$relative_path" ]; then
               continue
             fi
 
-            # ------------------------------------------------
-            # Convert 9:16 -> 16:9
+            # Check extension
+            case "$relative_path" in
+
+              *.mp4|*.MP4|*.mov|*.MOV|*.mkv|*.MKV|*.webm|*.WEBM|*.avi|*.AVI)
+                ;;
+
+              *)
+                echo "SKIP - Not a supported video: $relative_path"
+                continue
+                ;;
+
+            esac
+
+            destination_file="$DEST_DIR/$relative_path"
+
+            echo ""
+            echo "Checking:"
+            echo "$relative_path"
+
+            # ----------------------------------------------------
+            # Check exact destination file
+            # ----------------------------------------------------
+            if rclone lsf \
+              "$destination_file" \
+              --files-only \
+              2>/dev/null | grep -q .
+            then
+
+              echo "ALREADY CONVERTED -> SKIP"
+
+            else
+
+              echo "NOT CONVERTED -> PENDING"
+
+              printf '%s\n' "$relative_path" >> pending_videos.txt
+
+            fi
+
+          done < all_videos.txt
+
+
+          echo ""
+          echo "=========================================="
+          echo "ALL PENDING VIDEOS"
+          echo "=========================================="
+
+          cat pending_videos.txt || true
+
+
+      # ============================================================
+      # 8. Select ONLY first 10
+      #
+      # NOT RANDOM
+      #
+      # Because pending_videos.txt is already sorted.
+      # ============================================================
+      - name: Select first 10 videos
+        shell: bash
+        run: |
+
+          head -n "$MAX_VIDEOS" pending_videos.txt \
+            > selected_videos.txt
+
+          echo "=========================================="
+          echo "VIDEOS SELECTED FOR THIS RUN"
+          echo "=========================================="
+
+          if [ -s selected_videos.txt ]; then
+            cat selected_videos.txt
+          else
+            echo "No new videos to process."
+          fi
+
+
+          echo ""
+          echo "Number selected:"
+          wc -l selected_videos.txt
+
+
+      # ============================================================
+      # 9. Process videos
+      # ============================================================
+      - name: Convert and upload videos
+        shell: bash
+        run: |
+
+          processed=0
+          failed=0
+
+          while IFS= read -r relative_path
+          do
+
+            if [ -z "$relative_path" ]; then
+              continue
+            fi
+
+            processed=$((processed + 1))
+
+            echo ""
+            echo "=========================================="
+            echo "PROCESSING $processed / $MAX_VIDEOS"
+            echo "=========================================="
+
+            echo "Video:"
+            echo "$relative_path"
+
+            # ----------------------------------------------------
+            # Local paths
+            # ----------------------------------------------------
+
+            input_file="input/$relative_path"
+            output_file="output/$relative_path"
+
+            input_directory="$(dirname "$input_file")"
+            output_directory="$(dirname "$output_file")"
+
+            mkdir -p "$input_directory"
+            mkdir -p "$output_directory"
+
+
+            # ----------------------------------------------------
+            # Download source video
+            # ----------------------------------------------------
+
+            echo ""
+            echo "Downloading from Google Drive..."
+
+            if ! rclone copyto \
+              "$SOURCE_DIR/$relative_path" \
+              "$input_file" \
+              --progress
+            then
+
+              echo "ERROR: Download failed."
+              failed=$((failed + 1))
+              continue
+
+            fi
+
+
+            # ----------------------------------------------------
+            # Check downloaded file
+            # ----------------------------------------------------
+
+            if [ ! -f "$input_file" ]; then
+
+              echo "ERROR: Downloaded file does not exist."
+              failed=$((failed + 1))
+              continue
+
+            fi
+
+
+            echo ""
+            echo "Downloaded successfully:"
+            ls -lh "$input_file"
+
+
+            # ----------------------------------------------------
+            # Get video information
+            # ----------------------------------------------------
+
+            echo ""
+            echo "Input video information:"
+
+            ffprobe \
+              -v error \
+              -show_entries stream=width,height,duration \
+              -of default=noprint_wrappers=1 \
+              "$input_file" || true
+
+
+            # ====================================================
+            # 10. Convert 9:16 -> 16:9
+            #
+            # Output:
+            # 1920 x 1080
             #
             # Background:
-            #   Original video enlarged to fill 1920x1080
-            #   then blurred
+            # - Enlarged
+            # - Cropped to 16:9
+            # - Strong blur
             #
             # Foreground:
-            #   Original 9:16 video
-            #   centered
-            # ------------------------------------------------
+            # - Original video
+            # - Scaled to fit vertically
+            # - Centered
+            # ====================================================
 
-            echo "Converting..."
+            echo ""
+            echo "Converting to 1920x1080..."
 
-            ffmpeg \
+            if ! ffmpeg \
               -y \
               -i "$input_file" \
               -filter_complex "
-                [0:v]scale=1920:1080:force_original_aspect_ratio=increase,
-                     crop=1920:1080,
-                     gblur=sigma=35,
-                     setsar=1
-                     [bg];
 
-                [0:v]scale=608:-2:force_original_aspect_ratio=decrease,
-                     setsar=1
-                     [fg];
+                [0:v]
+                scale=1920:1080:force_original_aspect_ratio=increase,
+                crop=1920:1080,
+                gblur=sigma=35,
+                setsar=1
+                [background];
 
-                [bg][fg]overlay=(W-w)/2:(H-h)/2,
-                     format=yuv420p
-                     [v]
+                [0:v]
+                scale=608:1080:force_original_aspect_ratio=decrease,
+                pad=608:1080:(ow-iw)/2:(oh-ih)/2,
+                setsar=1
+                [foreground];
+
+                [background][foreground]
+                overlay=(W-w)/2:(H-h)/2,
+                format=yuv420p
+                [video]
+
               " \
-              -map "[v]" \
+              -map "[video]" \
               -map 0:a? \
               -c:v libx264 \
               -preset medium \
               -crf 20 \
+              -pix_fmt yuv420p \
               -c:a aac \
               -b:a 192k \
               -movflags +faststart \
               "$output_file"
+            then
 
-            # ------------------------------------------------
-            # Check output
-            # ------------------------------------------------
-
-            if [ ! -f "$output_file" ]; then
-              echo "ERROR: Conversion failed"
+              echo "ERROR: FFmpeg conversion failed."
+              failed=$((failed + 1))
               continue
+
             fi
 
-            filesize=$(du -h "$output_file" | cut -f1)
 
-            echo "Output created: $filesize"
+            # ----------------------------------------------------
+            # Check output
+            # ----------------------------------------------------
 
-            # ------------------------------------------------
-            # Upload to NanNanIphone2
-            # ------------------------------------------------
+            if [ ! -f "$output_file" ]; then
 
-            echo "Uploading..."
+              echo "ERROR: Output file was not created."
+              failed=$((failed + 1))
+              continue
 
-            rclone copyto \
+            fi
+
+
+            echo ""
+            echo "Conversion successful:"
+            ls -lh "$output_file"
+
+
+            # ----------------------------------------------------
+            # Verify output resolution
+            # ----------------------------------------------------
+
+            echo ""
+            echo "Checking output resolution..."
+
+            resolution=$(ffprobe \
+              -v error \
+              -select_streams v:0 \
+              -show_entries stream=width,height \
+              -of csv=s=x:p=0 \
+              "$output_file")
+
+            echo "Output resolution: $resolution"
+
+            if [ "$resolution" != "1920x1080" ]; then
+
+              echo "ERROR: Output is not 1920x1080."
+              failed=$((failed + 1))
+              continue
+
+            fi
+
+
+            # ====================================================
+            # 11. Upload to NanNanIphone2
+            # ====================================================
+
+            echo ""
+            echo "Uploading to Google Drive..."
+
+            if ! rclone copyto \
               "$output_file" \
               "$DEST_DIR/$relative_path" \
               --progress
+            then
 
-            # ------------------------------------------------
-            # Verify upload
-            # ------------------------------------------------
+              echo "ERROR: Upload failed."
+              failed=$((failed + 1))
+              continue
 
-            if rclone lsf "$DEST_DIR/$relative_path" \
+            fi
+
+
+            # ====================================================
+            # 12. Verify uploaded file
+            # ====================================================
+
+            echo ""
+            echo "Verifying uploaded file..."
+
+            if rclone lsf \
+              "$DEST_DIR/$relative_path" \
               --files-only \
-              --max-depth 1 \
               2>/dev/null | grep -q .
             then
 
-              echo "SUCCESS: $relative_path"
+              echo ""
+              echo "=========================================="
+              echo "SUCCESS"
+              echo "$relative_path"
+              echo "=========================================="
 
-              # Remove local files after successful upload
+              # Remove local files only AFTER
+              # successful upload verification.
+
               rm -f "$input_file"
               rm -f "$output_file"
 
             else
 
-              echo "ERROR: Upload verification failed"
+              echo ""
+              echo "ERROR: Upload verification failed."
+
+              failed=$((failed + 1))
 
             fi
 
           done < selected_videos.txt
 
-      # --------------------------------------------------
-      # 8. Summary
-      # --------------------------------------------------
-      - name: Summary
-        run: |
+
+          # ======================================================
+          # Final summary
+          # ======================================================
 
           echo ""
-          echo "======================================"
-          echo "JOB FINISHED"
-          echo "======================================"
+          echo "=========================================="
+          echo "FINAL SUMMARY"
+          echo "=========================================="
+
+          echo "Processed:"
+          echo "$processed"
+
+          echo "Failed:"
+          echo "$failed"
+
+          echo "Maximum allowed:"
+          echo "$MAX_VIDEOS"
 
           echo ""
-          echo "Videos selected:"
+          echo "Selected videos:"
           cat selected_videos.txt || true
 
-          echo ""
-          echo "Remaining pending videos:"
 
-          wc -l pending_videos.txt || true
+      # ============================================================
+      # 13. Final Google Drive check
+      # ============================================================
+      - name: Final verification
+        shell: bash
+        run: |
+
+          echo "=========================================="
+          echo "Checking NanNanIphone2"
+          echo "=========================================="
+
+          rclone lsf \
+            "$DEST_DIR" \
+            --files-only \
+            --recursive \
+            --format "p" \
+            | sort -f \
+            | tail -30 || true
+
+          echo ""
+          echo "Workflow completed."

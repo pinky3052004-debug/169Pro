@@ -3,187 +3,152 @@ name: Convert 9x16 Videos to 16x9
 on:
   workflow_dispatch:
 
-# ==============================================================
-# IMPORTANT
-# Allows GitHub Actions to update processed_videos.txt
-# ==============================================================
+# Prevent two workflow runs from processing the same videos
+# at the same time.
+concurrency:
+  group: video-conversion
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
-
 jobs:
   convert:
-
     runs-on: ubuntu-latest
 
     env:
-
-      # ----------------------------------------------------------
-      # Google Drive source
-      # ----------------------------------------------------------
-
       SOURCE_DIR: "NanNanDrive:NanNanIphone"
-
-      # ----------------------------------------------------------
-      # Google Drive destination
-      # ----------------------------------------------------------
-
       DEST_DIR: "NanNanDrive:NanNanIphone2"
-
-      # ----------------------------------------------------------
-      # Maximum videos per workflow run
-      # ----------------------------------------------------------
-
       MAX_VIDEOS: "10"
-
-      # ----------------------------------------------------------
-      # GitHub record file
-      # ----------------------------------------------------------
-
       RECORD_FILE: "processed_videos.txt"
-
 
     steps:
 
-      # ==========================================================
-      # 1. Checkout repository
-      # ==========================================================
-
+      # ============================================================
+      # 1. CHECKOUT REPOSITORY
+      # ============================================================
       - name: Checkout repository
         uses: actions/checkout@v4
-
         with:
           fetch-depth: 0
 
 
-      # ==========================================================
-      # 2. Install rclone
-      # ==========================================================
-
+      # ============================================================
+      # 2. INSTALL RCLONE
+      # ============================================================
       - name: Install rclone
         shell: bash
         run: |
+          set -e
 
           echo "=========================================="
-          echo "Installing rclone"
+          echo "INSTALLING RCLONE"
           echo "=========================================="
 
           curl https://rclone.org/install.sh | sudo bash
 
+          echo ""
           rclone version
 
 
-      # ==========================================================
-      # 3. Install FFmpeg
-      # ==========================================================
-
+      # ============================================================
+      # 3. INSTALL FFMPEG
+      # ============================================================
       - name: Install FFmpeg
         shell: bash
         run: |
+          set -e
 
           echo "=========================================="
-          echo "Installing FFmpeg"
+          echo "INSTALLING FFMPEG"
           echo "=========================================="
 
           sudo apt-get update
-
           sudo apt-get install -y ffmpeg
 
+          echo ""
           ffmpeg -version
 
 
-      # ==========================================================
-      # 4. Restore rclone config
-      # ==========================================================
-
+      # ============================================================
+      # 4. RESTORE RCLONE CONFIG
+      # ============================================================
       - name: Restore rclone config
         shell: bash
-
         env:
-
           RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG }}
-
         run: |
+          set -e
 
-          echo "Restoring rclone configuration..."
+          echo "=========================================="
+          echo "RESTORING RCLONE CONFIG"
+          echo "=========================================="
 
           mkdir -p "$HOME/.config/rclone"
 
           printf '%s' "$RCLONE_CONFIG_DATA" \
             > "$HOME/.config/rclone/rclone.conf"
 
-          chmod 600 \
-            "$HOME/.config/rclone/rclone.conf"
+          chmod 600 "$HOME/.config/rclone/rclone.conf"
 
           echo "rclone config restored."
 
 
-      # ==========================================================
-      # 5. Test Google Drive
-      # ==========================================================
-
+      # ============================================================
+      # 5. TEST GOOGLE DRIVE CONNECTION
+      # ============================================================
       - name: Test Google Drive
         shell: bash
         run: |
+          set -e
 
           echo "=========================================="
-          echo "Testing Google Drive"
+          echo "TESTING GOOGLE DRIVE"
           echo "=========================================="
 
           rclone lsd "NanNanDrive:"
 
           echo ""
-
           echo "Google Drive connection OK."
 
 
-      # ==========================================================
-      # 6. Make sure record file exists
-      # ==========================================================
-
+      # ============================================================
+      # 6. PREPARE PROCESSED RECORD
+      # ============================================================
       - name: Prepare processed record
         shell: bash
         run: |
+          set -e
 
           echo "=========================================="
-          echo "Preparing processed record"
+          echo "PREPARING PROCESSED RECORD"
           echo "=========================================="
 
           if [ ! -f "$RECORD_FILE" ]; then
-
-            echo "Record file does not exist."
-
-            echo "Creating:"
-            echo "$RECORD_FILE"
-
             touch "$RECORD_FILE"
-
           fi
 
-
           echo ""
-
           echo "Already processed videos:"
 
           if [ -s "$RECORD_FILE" ]; then
-
             nl -ba "$RECORD_FILE"
-
           else
-
             echo "No processed videos recorded yet."
-
           fi
 
 
-      # ==========================================================
-      # 7. Create temporary folders
-      # ==========================================================
-
+      # ============================================================
+      # 7. CREATE WORKING FOLDERS
+      # ============================================================
       - name: Create working folders
         shell: bash
         run: |
+          set -e
+
+          echo "=========================================="
+          echo "CREATING WORKING FOLDERS"
+          echo "=========================================="
 
           rm -rf input
           rm -rf output
@@ -191,26 +156,19 @@ jobs:
           mkdir -p input
           mkdir -p output
 
+          echo "Working folders ready."
 
-      # ==========================================================
-      # 8. Get videos from NanNanIphone
-      #
-      # IMPORTANT:
-      #
-      # rclone itself does NOT use --sort.
-      #
-      # Linux sort is used.
-      #
-      # Therefore the order is deterministic.
-      # NO RANDOM.
-      # ==========================================================
 
+      # ============================================================
+      # 8. GET ALL VIDEOS FROM GOOGLE DRIVE
+      # ============================================================
       - name: Get source videos
         shell: bash
         run: |
+          set -e
 
           echo "=========================================="
-          echo "Getting source videos"
+          echo "GETTING SOURCE VIDEOS"
           echo "=========================================="
 
           rclone lsf \
@@ -220,103 +178,61 @@ jobs:
             --format "p" \
             > all_videos_raw.txt
 
-
-          # ------------------------------------------------------
-          # Alphabetical sorting
-          # ------------------------------------------------------
-
-          sort -f all_videos_raw.txt \
-            > all_videos.txt
-
+          # Alphabetical deterministic sorting.
+          sort -f all_videos_raw.txt > all_videos.txt
 
           echo ""
-
-          echo "All source videos:"
+          echo "ALL SOURCE VIDEOS:"
+          echo "------------------------------------------"
 
           if [ -s all_videos.txt ]; then
-
             nl -ba all_videos.txt
-
           else
-
             echo "No videos found."
-
           fi
 
 
-      # ==========================================================
-      # 9. Build pending queue
-      #
-      # ONLY videos NOT inside processed_videos.txt
-      # ==========================================================
-
+      # ============================================================
+      # 9. BUILD PENDING QUEUE
+      # ============================================================
       - name: Build pending queue
         shell: bash
         run: |
+          set -e
 
           echo "=========================================="
-          echo "BUILDING PENDING VIDEO QUEUE"
+          echo "BUILDING PENDING QUEUE"
           echo "=========================================="
-
 
           rm -f pending_videos.txt
-
           touch pending_videos.txt
-
 
           while IFS= read -r relative_path
           do
-
-            # ----------------------------------------------------
-            # Ignore empty lines
-            # ----------------------------------------------------
 
             if [ -z "$relative_path" ]; then
               continue
             fi
 
-
-            # ----------------------------------------------------
-            # Only supported video formats
-            # ----------------------------------------------------
-
+            # Supported video extensions
             case "$relative_path" in
-
               *.mp4|*.MP4|*.mov|*.MOV|*.mkv|*.MKV|*.webm|*.WEBM|*.avi|*.AVI)
                 ;;
-
               *)
-                echo "Not a supported video:"
-                echo "$relative_path"
-                echo "SKIP"
+                echo "Not a supported video: $relative_path"
                 continue
                 ;;
-
             esac
 
+            # Check processed record.
+            if grep -Fqx "$relative_path" "$RECORD_FILE"; then
 
-            # ----------------------------------------------------
-            # Check GitHub record
-            #
-            # EXACT MATCH
-            # ----------------------------------------------------
-
-            if grep -Fqx \
-              "$relative_path" \
-              "$RECORD_FILE"
-            then
-
-              echo ""
-              echo "ALREADY PROCESSED:"
-              echo "$relative_path"
+              echo "ALREADY PROCESSED: $relative_path"
               echo "ACTION: SKIP"
 
             else
 
-              echo ""
-              echo "NOT PROCESSED:"
-              echo "$relative_path"
-              echo "ACTION: ADD TO QUEUE"
+              echo "NOT PROCESSED: $relative_path"
 
               printf '%s\n' "$relative_path" \
                 >> pending_videos.txt
@@ -325,163 +241,118 @@ jobs:
 
           done < all_videos.txt
 
-
-          # ------------------------------------------------------
-          # Remove duplicates
-          # ------------------------------------------------------
-
+          # Remove duplicates and keep deterministic order.
           sort -fu pending_videos.txt \
             -o pending_videos.txt
 
-
           echo ""
-
-          echo "=========================================="
-          echo "PENDING VIDEOS"
-          echo "=========================================="
-
+          echo "PENDING VIDEOS:"
+          echo "------------------------------------------"
 
           if [ -s pending_videos.txt ]; then
-
             nl -ba pending_videos.txt
-
           else
-
             echo "No new videos."
-
           fi
 
 
-      # ==========================================================
-      # 10. Select maximum 10 videos
-      #
-      # NEVER RANDOM
-      # ==========================================================
-
+      # ============================================================
+      # 10. SELECT MAXIMUM 10 VIDEOS
+      # ============================================================
       - name: Select maximum 10 videos
         shell: bash
         run: |
+          set -e
 
-          head -n "$MAX_VIDEOS" pending_videos.txt \
+          echo "=========================================="
+          echo "SELECTING VIDEOS"
+          echo "=========================================="
+
+          head -n "$MAX_VIDEOS" \
+            pending_videos.txt \
             > selected_videos.txt
 
-
-          echo "=========================================="
-          echo "VIDEOS FOR THIS RUN"
-          echo "=========================================="
-
+          echo ""
+          echo "VIDEOS FOR THIS RUN:"
+          echo "------------------------------------------"
 
           if [ -s selected_videos.txt ]; then
-
             nl -ba selected_videos.txt
-
           else
-
             echo "Nothing to process."
-
           fi
 
-
           echo ""
-
           echo "Selected count:"
-
           wc -l selected_videos.txt
 
 
-      # ==========================================================
-      # 11. Convert selected videos
-      # ==========================================================
-
+      # ============================================================
+      # 11. CONVERT AND UPLOAD
+      # ============================================================
       - name: Convert and upload selected videos
         shell: bash
         run: |
+          set -e
+
+          echo "=================================================="
+          echo "STARTING VIDEO PROCESSING"
+          echo "=================================================="
 
           total=$(wc -l < selected_videos.txt)
 
           current=0
-
           success=0
-
           failed=0
-
-
-          echo ""
-
-          echo "=================================================="
-          echo "START PROCESSING"
-          echo "TOTAL SELECTED: $total"
-          echo "=================================================="
-
-
-          # ========================================================
-          # LOOP THROUGH ALL SELECTED VIDEOS
-          # ========================================================
 
           while IFS= read -r relative_path
           do
 
+            # Ignore empty lines.
             if [ -z "$relative_path" ]; then
               continue
             fi
 
-
             current=$((current + 1))
 
-
             echo ""
-            echo ""
-            echo "##################################################"
-            echo "# VIDEO $current / $total"
-            echo "# $relative_path"
-            echo "##################################################"
+            echo "=================================================="
+            echo "PROCESSING VIDEO $current / $total"
+            echo "=================================================="
+            echo "$relative_path"
+            echo "=================================================="
 
 
-            # ======================================================
+            # --------------------------------------------------------
             # SAFETY CHECK
-            #
-            # Check GitHub record AGAIN before processing.
-            #
-            # This prevents accidental duplicate processing.
-            # ======================================================
+            # --------------------------------------------------------
+            if grep -Fqx "$relative_path" "$RECORD_FILE"; then
 
-            if grep -Fqx \
-              "$relative_path" \
-              "$RECORD_FILE"
-            then
-
-              echo ""
-              echo "Already in processed_videos.txt"
-              echo "SKIPPING:"
-              echo "$relative_path"
+              echo "Already in processed_videos.txt."
+              echo "Skipping..."
 
               continue
 
             fi
 
 
-            # ======================================================
-            # Local file paths
-            # ======================================================
-
+            # --------------------------------------------------------
+            # FILE PATHS
+            # --------------------------------------------------------
             input_file="input/$relative_path"
-
             output_file="output/$relative_path"
 
-
-            mkdir -p \
-              "$(dirname "$input_file")"
-
-            mkdir -p \
-              "$(dirname "$output_file")"
+            mkdir -p "$(dirname "$input_file")"
+            mkdir -p "$(dirname "$output_file")"
 
 
-            # ======================================================
+            # --------------------------------------------------------
             # DOWNLOAD
-            # ======================================================
-
+            # --------------------------------------------------------
             echo ""
-            echo "[$current/$total] Downloading..."
+            echo "=========================================="
+            echo "DOWNLOADING"
+            echo "=========================================="
 
             if ! rclone copyto \
               "$SOURCE_DIR/$relative_path" \
@@ -500,15 +371,14 @@ jobs:
             fi
 
 
-            # ======================================================
-            # Verify downloaded file
-            # ======================================================
-
+            # --------------------------------------------------------
+            # CHECK DOWNLOADED FILE
+            # --------------------------------------------------------
             if [ ! -f "$input_file" ]; then
 
               echo ""
-              echo "ERROR:"
-              echo "Downloaded file not found."
+              echo "Downloaded file was not found:"
+              echo "$input_file"
 
               failed=$((failed + 1))
 
@@ -516,36 +386,31 @@ jobs:
 
             fi
 
-
             echo ""
             echo "Download successful:"
-
             ls -lh "$input_file"
 
 
-            # ======================================================
-            # FFmpeg
+            # --------------------------------------------------------
+            # FFMPEG CONVERSION
             #
-            # 9:16 -> 16:9
+            # IMPORTANT:
+            # -nostdin prevents FFmpeg from reading the
+            # selected_videos.txt input stream.
             #
-            # Output:
-            # 1920x1080
-            #
-            # Background:
-            # enlarged + crop + blur
-            #
-            # Foreground:
-            # original vertical video centered
-            # ======================================================
-
+            # This fixes the problem where only 1 video
+            # was processed out of 10 selected videos.
+            # --------------------------------------------------------
             echo ""
-            echo "[$current/$total] Converting..."
+            echo "=========================================="
+            echo "CONVERTING TO 1920x1080"
+            echo "=========================================="
 
             if ! ffmpeg \
+              -nostdin \
               -y \
               -i "$input_file" \
               -filter_complex "
-
                 [0:v]
                 scale=1920:1080:force_original_aspect_ratio=increase,
                 crop=1920:1080,
@@ -562,7 +427,6 @@ jobs:
                 overlay=(W-w)/2:(H-h)/2,
                 format=yuv420p
                 [video]
-
               " \
               -map "[video]" \
               -map 0:a? \
@@ -577,7 +441,7 @@ jobs:
             then
 
               echo ""
-              echo "FFmpeg FAILED:"
+              echo "FFmpeg conversion FAILED:"
               echo "$relative_path"
 
               failed=$((failed + 1))
@@ -590,34 +454,35 @@ jobs:
             fi
 
 
-            # ======================================================
-            # Check output
-            # ======================================================
-
+            # --------------------------------------------------------
+            # CHECK OUTPUT FILE
+            # --------------------------------------------------------
             if [ ! -f "$output_file" ]; then
 
               echo ""
-              echo "ERROR:"
               echo "Output file was not created."
 
               failed=$((failed + 1))
 
               rm -f "$input_file"
+              rm -f "$output_file"
 
               continue
 
             fi
 
-
             echo ""
             echo "Conversion successful:"
-
             ls -lh "$output_file"
 
 
-            # ======================================================
-            # Verify resolution
-            # ======================================================
+            # --------------------------------------------------------
+            # VERIFY RESOLUTION
+            # --------------------------------------------------------
+            echo ""
+            echo "=========================================="
+            echo "VERIFYING OUTPUT RESOLUTION"
+            echo "=========================================="
 
             resolution=$(ffprobe \
               -v error \
@@ -625,7 +490,6 @@ jobs:
               -show_entries stream=width,height \
               -of csv=s=x:p=0 \
               "$output_file")
-
 
             echo ""
             echo "Output resolution:"
@@ -635,8 +499,9 @@ jobs:
             if [ "$resolution" != "1920x1080" ]; then
 
               echo ""
-              echo "ERROR:"
-              echo "Output is NOT 1920x1080."
+              echo "WRONG OUTPUT RESOLUTION"
+              echo "Expected: 1920x1080"
+              echo "Actual:   $resolution"
 
               failed=$((failed + 1))
 
@@ -648,15 +513,22 @@ jobs:
             fi
 
 
-            # ======================================================
+            # --------------------------------------------------------
             # UPLOAD TO GOOGLE DRIVE
-            # ======================================================
-
+            # --------------------------------------------------------
             destination="$DEST_DIR/$relative_path"
 
+            echo ""
+            echo "=========================================="
+            echo "UPLOADING"
+            echo "=========================================="
+
+            echo "Source:"
+            echo "$output_file"
 
             echo ""
-            echo "[$current/$total] Uploading..."
+            echo "Destination:"
+            echo "$destination"
 
             if ! rclone copyto \
               "$output_file" \
@@ -678,16 +550,15 @@ jobs:
             fi
 
 
-            # ======================================================
-            # VERIFY GOOGLE DRIVE UPLOAD
-            # ======================================================
-
+            # --------------------------------------------------------
+            # VERIFY UPLOAD
+            # --------------------------------------------------------
             echo ""
-            echo "Verifying uploaded file..."
-
+            echo "=========================================="
+            echo "VERIFYING UPLOADED FILE"
+            echo "=========================================="
 
             uploaded_name=$(basename "$relative_path")
-
 
             if rclone lsf \
               "$destination" \
@@ -700,78 +571,62 @@ jobs:
               echo ""
               echo "=========================================="
               echo "UPLOAD SUCCESS"
-              echo "$relative_path"
               echo "=========================================="
 
+              echo "$relative_path"
 
-              success=$((success + 1))
-
-
-              # ==================================================
-              # IMPORTANT
-              #
-              # ONLY AFTER SUCCESSFUL UPLOAD
-              # add video to processed_videos.txt
-              # ==================================================
+              echo ""
+              echo "=========================================="
+              echo "ADDING TO PROCESSED RECORD"
+              echo "=========================================="
 
               echo "$relative_path" \
                 >> "$RECORD_FILE"
 
-
-              # --------------------------------------------------
-              # Remove duplicates and sort record
-              # --------------------------------------------------
-
+              # Keep record unique and sorted.
               sort -fu "$RECORD_FILE" \
                 -o "$RECORD_FILE"
-
 
               echo ""
               echo "Added to processed record:"
               echo "$relative_path"
 
+              success=$((success + 1))
 
-              # --------------------------------------------------
-              # Delete temporary files
-              # --------------------------------------------------
 
+              # ------------------------------------------------------
+              # CLEAN TEMP FILES ONLY AFTER SUCCESS
+              # ------------------------------------------------------
               rm -f "$input_file"
               rm -f "$output_file"
-
 
             else
 
               echo ""
-              echo "UPLOAD VERIFICATION FAILED:"
+              echo "=========================================="
+              echo "UPLOAD VERIFICATION FAILED"
+              echo "=========================================="
+
               echo "$relative_path"
 
+              echo ""
+              echo "This video will NOT be added to processed_videos.txt."
 
               failed=$((failed + 1))
 
-
-              # IMPORTANT:
-              #
-              # Do NOT add to processed_videos.txt
-              #
-              # So it can be retried next run.
-
               rm -f "$input_file"
               rm -f "$output_file"
-
 
               continue
 
             fi
 
-
           done < selected_videos.txt
 
 
-          # ========================================================
+          # ==========================================================
           # FINAL SUMMARY
-          # ========================================================
-
-          echo ""
+          # ==========================================================
           echo ""
           echo "=================================================="
           echo "FINAL SUMMARY"
@@ -782,53 +637,42 @@ jobs:
           echo "Failed   : $failed"
           echo "Maximum  : $MAX_VIDEOS"
 
+          echo ""
+          echo "=================================================="
+          echo "PROCESSED RECORD CURRENTLY CONTAINS:"
+          echo "=================================================="
+
+          if [ -s "$RECORD_FILE" ]; then
+            nl -ba "$RECORD_FILE"
+          else
+            echo "No processed videos."
+          fi
+
           echo "=================================================="
 
 
-          echo ""
-          echo "Processed record currently contains:"
-
-          nl -ba "$RECORD_FILE"
-
-
-      # ==========================================================
-      # 12. Commit processed record to GitHub
-      #
-      # IMPORTANT:
-      #
-      # Only processed_videos.txt is committed.
-      # Videos are NOT uploaded to GitHub.
-      # ==========================================================
-
+      # ============================================================
+      # 12. SAVE PROCESSED RECORD TO GITHUB
+      # ============================================================
       - name: Save processed record to GitHub
         shell: bash
         run: |
+          set -e
 
           echo "=========================================="
           echo "SAVING PROCESSED RECORD"
           echo "=========================================="
 
-
-          # ------------------------------------------------------
-          # Git configuration
-          # ------------------------------------------------------
-
-          git config user.name "github-actions[bot]"
+          git config user.name \
+            "github-actions[bot]"
 
           git config user.email \
             "41898282+github-actions[bot]@users.noreply.github.com"
 
 
-          # ------------------------------------------------------
-          # Add ONLY record file
-          # ------------------------------------------------------
-
+          # Only add the record file.
           git add "$RECORD_FILE"
 
-
-          # ------------------------------------------------------
-          # Check whether anything changed
-          # ------------------------------------------------------
 
           if git diff --cached --quiet; then
 
@@ -843,7 +687,6 @@ jobs:
             git commit \
               -m "Update processed video record"
 
-
             echo ""
             echo "Pushing record to GitHub..."
 
@@ -855,32 +698,23 @@ jobs:
           fi
 
 
-      # ==========================================================
-      # 13. Final record display
-      # ==========================================================
-
+      # ============================================================
+      # 13. FINAL RECORD
+      # ============================================================
       - name: Final processed record
         shell: bash
         run: |
-
           echo ""
           echo "=================================================="
           echo "FINAL PROCESSED VIDEO RECORD"
           echo "=================================================="
 
-
           if [ -s "$RECORD_FILE" ]; then
-
             nl -ba "$RECORD_FILE"
-
           else
-
             echo "No processed videos."
-
           fi
 
-
-          echo ""
           echo "=================================================="
           echo "WORKFLOW FINISHED"
           echo "=================================================="

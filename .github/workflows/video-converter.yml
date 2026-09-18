@@ -19,7 +19,7 @@ jobs:
     env:
       SOURCE_DIR: "NanNanDrive:NanNanIphone"
       DEST_DIR: "NanNanDrive:NanNanIphone2"
-      MAX_VIDEOS: "100"
+      MAX_VIDEOS: "10"
       RECORD_FILE: "processed_videos.txt"
 
     steps:

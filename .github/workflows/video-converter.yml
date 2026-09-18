@@ -160,7 +160,7 @@ jobs:
 
 
       # ============================================================
-      # 8. GET ALL VIDEOS FROM GOOGLE DRIVE
+      # 8. GET ALL VIDEOS FROM GOOGLE DRIVE (WITH VERBOSE LOGGING)
       # ============================================================
       - name: Get source videos
         shell: bash
@@ -176,6 +176,7 @@ jobs:
             --files-only \
             --recursive \
             --format "p" \
+            -vv \
             > all_videos_raw.txt
 
           # Alphabetical deterministic sorting.
@@ -393,13 +394,6 @@ jobs:
 
             # --------------------------------------------------------
             # FFMPEG CONVERSION
-            #
-            # IMPORTANT:
-            # -nostdin prevents FFmpeg from reading the
-            # selected_videos.txt input stream.
-            #
-            # This fixes the problem where only 1 video
-            # was processed out of 10 selected videos.
             # --------------------------------------------------------
             echo ""
             echo "=========================================="
